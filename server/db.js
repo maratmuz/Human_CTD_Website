@@ -28,7 +28,6 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS participants (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    display_name TEXT NOT NULL,
     socket_id TEXT,
     connected INTEGER NOT NULL DEFAULT 1,
     joined_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -107,7 +106,7 @@ export const queries = {
 
   // Participants
   addParticipant: db.prepare(
-    'INSERT INTO participants (id, session_id, display_name, socket_id) VALUES (?, ?, ?, ?)'
+    'INSERT INTO participants (id, session_id, socket_id) VALUES (?, ?, ?)'
   ),
   getParticipant: db.prepare('SELECT * FROM participants WHERE id = ?'),
   getParticipantBySocket: db.prepare('SELECT * FROM participants WHERE socket_id = ?'),
@@ -169,6 +168,14 @@ export const queries = {
     JOIN rounds rd ON p.round_id = rd.id
     WHERE rd.session_id = ?
     ORDER BY rd.round_number
+  `),
+
+  // Histogram data: all response values for a round
+  getRoundResponseValues: db.prepare(`
+    SELECT resp.value
+    FROM responses resp
+    JOIN pairs p ON resp.pair_id = p.id
+    WHERE p.round_id = ?
   `),
 };
 

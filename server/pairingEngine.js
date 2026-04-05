@@ -1,16 +1,15 @@
-import * as roundRobin from './pairings/roundRobin.js';
-import * as randomMixing from './pairings/randomMixing.js';
-import * as geographic from './pairings/geographic.js';
-import * as smallWorld from './pairings/smallWorld.js';
-import * as custom from './pairings/custom.js';
+import * as spatialNetwork from './pairings/geographic.js';
+import * as randomNetwork from './pairings/randomMixing.js';
+import * as homogeneousMixing from './pairings/homogeneous.js';
 
 const algorithms = {
-  'round-robin': roundRobin,
-  'random-mixing': randomMixing,
-  'geographic': geographic,
-  'small-world': smallWorld,
-  'custom': custom,
+  'spatial-network': spatialNetwork,
+  'random-network': randomNetwork,
+  'homogeneous-mixing': homogeneousMixing,
 };
+
+// Cache networks per session so the network is stable across rounds
+const networkCache = new Map();
 
 /**
  * Get all available pairing algorithms with their metadata.
@@ -23,27 +22,95 @@ export function getAlgorithms() {
 }
 
 /**
- * Generate pairings for a given round using the specified algorithm.
- *
- * @param {string} algorithmName - Name of the algorithm (e.g. 'round-robin')
- * @param {Array} participants - Array of participant objects with at least { id }
- * @param {number} roundNumber - 1-indexed round number
- * @param {object} config - Algorithm-specific configuration
- * @returns {Array<{a: string, b: string}>} Array of pair objects
+ * Build or retrieve the cached network for a session.
+ * The network is a set of all possible edges (connections) between participants.
+ * Each round, a random subset of these edges is selected as actual pairings.
  */
-export function generatePairings(algorithmName, participants, roundNumber, config = {}) {
+export function getOrBuildNetwork(sessionId, algorithmName, participants, config = {}) {
+  const cacheKey = `${sessionId}:${algorithmName}`;
+  const cached = networkCache.get(cacheKey);
+
+  // Return cached if participant list hasn't changed
+  if (cached && cached.participantIds.length === participants.length &&
+      cached.participantIds.every((id, i) => id === participants[i].id)) {
+    return cached;
+  }
+
   const algorithm = algorithms[algorithmName];
   if (!algorithm) {
     throw new Error(`Unknown pairing algorithm: ${algorithmName}`);
   }
-  return algorithm.generatePairings(participants, roundNumber, config);
+
+  const edges = algorithm.buildNetwork(participants, config);
+  const network = {
+    edges,
+    participantIds: participants.map((p) => p.id),
+  };
+
+  networkCache.set(cacheKey, network);
+  return network;
 }
 
 /**
- * Get the maximum number of rounds for an algorithm given participant count.
+ * Generate pairings for a round by sampling a random maximal matching
+ * from the network's edges.
  */
-export function getMaxRounds(algorithmName, participantCount) {
-  const algorithm = algorithms[algorithmName];
-  if (!algorithm) return Infinity;
-  return algorithm.meta.maxRounds(participantCount);
+export function generatePairings(sessionId, algorithmName, participants, roundNumber, config = {}) {
+  const network = getOrBuildNetwork(sessionId, algorithmName, participants, config);
+  return sampleMatchingFromNetwork(network, roundNumber);
+}
+
+/**
+ * Given a network, randomly sample a maximal matching.
+ * Shuffles all edges using the round number as a seed variation,
+ * then greedily picks non-overlapping pairs.
+ */
+function sampleMatchingFromNetwork(network, roundNumber) {
+  const { edges, participantIds } = network;
+  if (edges.length === 0) return [];
+
+  // Shuffle edges differently each round (seeded by round number)
+  const shuffled = [...edges];
+  let seed = roundNumber * 2654435761;
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const j = seed % (i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  // Greedy maximal matching
+  const paired = new Set();
+  const pairs = [];
+
+  for (const [i, j] of shuffled) {
+    if (!paired.has(i) && !paired.has(j)) {
+      pairs.push({ a: participantIds[i], b: participantIds[j] });
+      paired.add(i);
+      paired.add(j);
+    }
+  }
+
+  return pairs;
+}
+
+/**
+ * Get the network edges for a session (for admin visualization).
+ */
+export function getNetworkEdges(sessionId, algorithmName, participants, config = {}) {
+  const network = getOrBuildNetwork(sessionId, algorithmName, participants, config);
+  return network.edges.map(([i, j]) => ({
+    a: network.participantIds[i],
+    b: network.participantIds[j],
+  }));
+}
+
+/**
+ * Clear cached network for a session.
+ */
+export function clearNetworkCache(sessionId) {
+  for (const key of networkCache.keys()) {
+    if (key.startsWith(`${sessionId}:`)) {
+      networkCache.delete(key);
+    }
+  }
 }

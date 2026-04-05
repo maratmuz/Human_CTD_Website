@@ -61,10 +61,9 @@ router.get('/sessions/:id/participants/csv', (req, res) => {
     return res.status(404).json({ error: 'Session not found' });
   }
 
-  const headers = ['id', 'display_name', 'connected', 'joined_at'];
+  const headers = ['id', 'connected', 'joined_at'];
   const rows = data.participants.map((p) => [
     p.id,
-    `"${p.display_name}"`,
     p.connected,
     p.joined_at,
   ]);

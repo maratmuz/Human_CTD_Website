@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import { useGame } from '../context/GameContext';
@@ -8,10 +8,53 @@ export default function ParticipantPage() {
   const { socket, connected } = useSocket();
   const { state, dispatch } = useGame();
 
-  const [displayName, setDisplayName] = useState('');
   const [value, setValue] = useState(500);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [countdown, setCountdown] = useState(null);
+  const countdownRef = useRef(null);
+
+  // Clear any running countdown interval
+  function clearCountdown() {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+    setCountdown(null);
+  }
+
+  // Start a countdown from `seconds`; calls `onExpire` when done
+  function startCountdown(seconds, onExpire) {
+    clearCountdown();
+    if (seconds <= 0) return;
+    setCountdown(seconds);
+    const startTime = Date.now();
+    countdownRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const remaining = seconds - elapsed;
+      if (remaining <= 0) {
+        clearCountdown();
+        onExpire?.();
+      } else {
+        setCountdown(remaining);
+      }
+    }, 250);
+  }
+
+  // Auto-submit when round timer expires
+  const autoSubmitRef = useRef(null);
+  autoSubmitRef.current = () => {
+    if (state.hasSubmitted || submitting) return;
+    // Auto-submit current value
+    if (!socket || !state.pairId) return;
+    setSubmitting(true);
+    socket.emit('response:submit', { pairId: state.pairId, value: Math.round(value) }, (response) => {
+      setSubmitting(false);
+      if (!response?.error) {
+        dispatch({ type: 'SUBMITTED' });
+      }
+    });
+  };
 
   // Set up socket listeners
   useEffect(() => {
@@ -22,29 +65,35 @@ export default function ParticipantPage() {
     });
 
     socket.on('round:start', (data) => {
+      setValue(500); // reset slider for new round
       dispatch({
         type: 'ROUND_START',
         roundNumber: data.roundNumber,
         pairId: data.pairId,
-        partnerId: data.partnerId,
-        partnerName: data.partnerName,
         imageId: data.imageId,
+        roundTimer: data.roundTimer,
       });
     });
 
     socket.on('round:feedback', (feedback) => {
+      clearCountdown();
       dispatch({ type: 'FEEDBACK', feedback });
     });
 
-    socket.on('round:ended', () => {
-      dispatch({ type: 'ROUND_ENDED' });
+    socket.on('round:feedback-timer', ({ feedbackTimer }) => {
+      dispatch({ type: 'FEEDBACK_TIMER', feedbackTimer });
+      if (feedbackTimer > 0) {
+        startCountdown(feedbackTimer, null); // purely visual, server auto-advances
+      }
     });
 
     socket.on('round:unpaired', (data) => {
+      clearCountdown();
       dispatch({ type: 'UNPAIRED', roundNumber: data.roundNumber });
     });
 
     socket.on('session:ended', () => {
+      clearCountdown();
       dispatch({ type: 'SESSION_ENDED' });
     });
 
@@ -56,31 +105,62 @@ export default function ParticipantPage() {
       // Partner has submitted, we're still waiting
     });
 
+    socket.on('partner:disconnected', () => {
+      clearCountdown();
+      dispatch({ type: 'PARTNER_DISCONNECTED' });
+    });
+
     return () => {
       socket.off('participants:count');
       socket.off('round:start');
       socket.off('round:feedback');
-      socket.off('round:ended');
+      socket.off('round:feedback-timer');
       socket.off('round:unpaired');
       socket.off('session:ended');
       socket.off('session:locked');
       socket.off('partner:submitted');
+      socket.off('partner:disconnected');
     };
   }, [socket, dispatch]);
 
-  // Try to reconnect if we have stored participant data
+  // Start round countdown when entering playing stage
   useEffect(() => {
-    if (!socket || !connected) return;
+    if (state.stage === 'playing' && state.roundTimer > 0 && !state.hasSubmitted) {
+      startCountdown(state.roundTimer, () => {
+        autoSubmitRef.current?.();
+      });
+    }
+    if (state.stage !== 'playing') {
+      // Don't clear here — feedback timer might be running
+    }
+  }, [state.stage, state.roundTimer, state.hasSubmitted]);
+
+  // Clear countdown on submit
+  useEffect(() => {
+    if (state.hasSubmitted && state.stage === 'playing') {
+      clearCountdown();
+    }
+  }, [state.hasSubmitted, state.stage]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => clearCountdown();
+  }, []);
+
+  // Auto-join or reconnect when socket connects
+  useEffect(() => {
+    if (!socket || !connected || state.stage !== 'join') return;
+
+    // Try to reconnect first
     const stored = sessionStorage.getItem(`participant:${sessionId}`);
     if (stored) {
-      const { participantId, displayName: storedName } = JSON.parse(stored);
+      const { participantId } = JSON.parse(stored);
       socket.emit('session:reconnect', { sessionId, participantId }, (response) => {
         if (response?.reconnected) {
           dispatch({
             type: 'JOINED',
             sessionId,
             participantId,
-            displayName: storedName,
             participantCount: 0,
           });
           if (response.activeRound) {
@@ -89,52 +169,46 @@ export default function ParticipantPage() {
               roundNumber: response.activeRound.roundNumber,
               pairId: response.activeRound.pairId,
               imageId: response.activeRound.imageId,
-              partnerId: null,
-              partnerName: 'Partner',
+              roundTimer: 0, // don't restart timer on reconnect
             });
             if (response.activeRound.hasSubmitted) {
               dispatch({ type: 'SUBMITTED' });
             }
           }
-        }
-      });
-    }
-  }, [socket, connected, sessionId, dispatch]);
-
-  const handleJoin = useCallback(
-    (e) => {
-      e.preventDefault();
-      if (!socket || !displayName.trim()) return;
-
-      setError('');
-      socket.emit('session:join', { sessionId, displayName: displayName.trim() }, (response) => {
-        if (response?.error) {
-          setError(response.error);
         } else {
-          // Store for reconnection
-          sessionStorage.setItem(
-            `participant:${sessionId}`,
-            JSON.stringify({
-              participantId: response.participantId,
-              displayName: displayName.trim(),
-            })
-          );
-          dispatch({
-            type: 'JOINED',
-            sessionId,
-            participantId: response.participantId,
-            displayName: displayName.trim(),
-            participantCount: response.participantCount,
-          });
+          joinSession();
         }
       });
-    },
-    [socket, sessionId, displayName, dispatch]
-  );
+    } else {
+      joinSession();
+    }
+  }, [socket, connected, sessionId, state.stage]);
+
+  function joinSession() {
+    if (!socket) return;
+    setError('');
+    socket.emit('session:join', { sessionId }, (response) => {
+      if (response?.error) {
+        setError(response.error);
+      } else {
+        sessionStorage.setItem(
+          `participant:${sessionId}`,
+          JSON.stringify({ participantId: response.participantId })
+        );
+        dispatch({
+          type: 'JOINED',
+          sessionId,
+          participantId: response.participantId,
+          participantCount: response.participantCount,
+        });
+      }
+    });
+  }
 
   const handleSubmit = useCallback(() => {
     if (!socket || submitting || state.hasSubmitted) return;
     setSubmitting(true);
+    clearCountdown();
 
     socket.emit('response:submit', { pairId: state.pairId, value: Math.round(value) }, (response) => {
       setSubmitting(false);
@@ -148,38 +222,19 @@ export default function ParticipantPage() {
 
   // ── Render based on stage ──
 
-  // Not yet joined
+  // Connecting / joining
   if (state.stage === 'join') {
     return (
       <div className="center-page">
-        <div className="card max-w-md w-full">
-          <div className="page-header">
-            <h1>Join Experiment</h1>
-            <p>Session: {sessionId}</p>
-          </div>
-
-          {error && <p style={{ color: 'var(--danger)', marginBottom: 16 }}>{error}</p>}
-
-          <form onSubmit={handleJoin}>
-            <div className="form-group">
-              <label className="label">Your Display Name</label>
-              <input
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Enter your name..."
-                autoFocus
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="btn btn-primary w-full"
-              disabled={!displayName.trim() || !connected}
-            >
-              {connected ? 'Join' : 'Connecting...'}
-            </button>
-          </form>
+        <div className="card max-w-md w-full text-center">
+          <h2>Joining Experiment...</h2>
+          {error ? (
+            <p style={{ marginTop: 12, color: 'var(--danger)' }}>{error}</p>
+          ) : (
+            <p style={{ marginTop: 12, color: 'var(--text-muted)' }}>
+              {connected ? 'Connecting to session...' : 'Establishing connection...'}
+            </p>
+          )}
         </div>
       </div>
     );
@@ -192,7 +247,6 @@ export default function ParticipantPage() {
         <div className="card max-w-md w-full text-center">
           <div className="page-header">
             <h1>Waiting Room</h1>
-            <p>Welcome, {state.displayName}!</p>
           </div>
 
           <div className="counter">{state.participantCount}</div>
@@ -218,12 +272,19 @@ export default function ParticipantPage() {
     return (
       <div className="center-page">
         <div className="card max-w-md w-full text-center">
-          <p style={{ color: 'var(--text-muted)', marginBottom: 8 }}>
-            Round {state.currentRound} — Paired with {state.partnerName || 'a partner'}
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <p style={{ color: 'var(--text-muted)' }}>
+              Round {state.currentRound}
+            </p>
+            {countdown !== null && !state.hasSubmitted && (
+              <span className={`countdown ${countdown <= 5 ? 'countdown-urgent' : ''}`}>
+                {countdown}s
+              </span>
+            )}
+          </div>
 
           <img
-            src={`/images/${state.imageId}.jpg`}
+            src={`/images/${state.imageId}`}
             alt="Experiment stimulus"
             className="game-image"
             onError={(e) => {
@@ -300,45 +361,60 @@ export default function ParticipantPage() {
     );
   }
 
-  // Feedback — show match result
+  // Feedback — show match result (this is now the resting state between rounds)
   if (state.stage === 'feedback') {
     const { feedback } = state;
+
+    // Unpaired this round
+    if (feedback?.unpaired) {
+      return (
+        <div className="center-page">
+          <div className="card max-w-md w-full text-center">
+            <p style={{ color: 'var(--text-muted)' }}>
+              You were not paired this round. Waiting for the next round...
+            </p>
+            {countdown !== null && (
+              <p style={{ marginTop: 12, fontSize: 14, color: 'var(--text-muted)' }}>
+                Next round in {countdown}s
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Partner disconnected
+    if (feedback?.partnerDisconnected) {
+      return (
+        <div className="center-page">
+          <div className="card max-w-md w-full text-center">
+            <p style={{ color: 'var(--text-muted)' }}>
+              Your partner disconnected. Waiting for the next round...
+            </p>
+            {countdown !== null && (
+              <p style={{ marginTop: 12, fontSize: 14, color: 'var(--text-muted)' }}>
+                Next round in {countdown}s
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="center-page">
         <div className={`card max-w-md w-full feedback-card ${feedback.matched ? 'matched' : 'not-matched'}`}>
           <div className="feedback-icon">{feedback.matched ? '✓' : '✗'}</div>
           <h2>{feedback.matched ? 'Match!' : 'No Match'}</h2>
 
-          {feedback.partnerValue !== undefined && (
-            <p style={{ marginTop: 12 }}>
-              Partner's value: <strong>{feedback.partnerValue}</strong>
-            </p>
-          )}
-          {feedback.difference !== undefined && (
-            <p style={{ marginTop: 8, color: 'var(--text-muted)' }}>
-              Difference: {feedback.difference}
-            </p>
-          )}
-
           <p style={{ marginTop: 24, color: 'var(--text-muted)' }}>
             Waiting for the next round...
           </p>
-        </div>
-      </div>
-    );
-  }
-
-  // Waiting between rounds
-  if (state.stage === 'waiting') {
-    return (
-      <div className="center-page">
-        <div className="card max-w-md w-full text-center">
-          <h2>Waiting for Next Round</h2>
-          <p style={{ marginTop: 12, color: 'var(--text-muted)' }}>
-            {state.currentRound
-              ? `Round ${state.currentRound} complete. The host will start the next round shortly.`
-              : 'Please wait...'}
-          </p>
+          {countdown !== null && (
+            <p style={{ marginTop: 8, fontSize: 14, color: 'var(--text-muted)' }}>
+              Next round in {countdown}s
+            </p>
+          )}
         </div>
       </div>
     );
@@ -351,7 +427,7 @@ export default function ParticipantPage() {
         <div className="card max-w-md w-full text-center">
           <h2>Experiment Complete</h2>
           <p style={{ marginTop: 12, color: 'var(--text-muted)' }}>
-            Thank you for participating, {state.displayName}!
+            Thank you for participating!
           </p>
           <p style={{ marginTop: 8, color: 'var(--text-muted)' }}>
             The experiment has ended. Your responses have been recorded.

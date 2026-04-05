@@ -3,8 +3,6 @@ import crypto from 'crypto';
 import { queries } from '../db.js';
 import { getAlgorithms } from '../pairingEngine.js';
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-
 /** Generate a short, human-friendly session code (e.g. "A3X9K2") */
 function shortId(length = 6) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I to avoid confusion
@@ -18,7 +16,7 @@ function shortId(length = 6) {
 
 function authMiddleware(req, res, next) {
   const password = req.headers['x-admin-password'] || req.query.password;
-  if (password !== ADMIN_PASSWORD) {
+  if (password !== (process.env.ADMIN_PASSWORD || 'admin')) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
@@ -34,11 +32,11 @@ export default function adminRouter(io) {
     const id = shortId();
     const sessionConfig = {
       tolerance: 50,
-      feedbackMode: 'match-only',
-      pairingAlgorithm: 'random-mixing',
+      pairingAlgorithm: 'homogeneous-mixing',
       algorithmConfig: {},
-      images: ['image1', 'image2', 'image3'],
-      roundTimeLimit: null, // null = no limit
+      image: 'default',
+      roundTimer: 20,
+      feedbackTimer: 5,
       ...config,
     };
 

@@ -1,17 +1,38 @@
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
+import fs from 'fs';
 import { queries } from './db.js';
-import { startRound, submitResponse, getRoundProgress, getSessionData, endSession } from './gameLogic.js';
+import {
+  startRound, submitResponse, getRoundProgress,
+  endSession, handleParticipantDeparture, handleRoundTimeout,
+  getRoundHistogramData,
+} from './gameLogic.js';
 import { getAlgorithms } from './pairingEngine.js';
+
+/** Generate a short participant ID like "P-A3X9" */
+function generateParticipantId() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(4);
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += chars[bytes[i] % chars.length];
+  }
+  return `P-${code}`;
+}
+
 import adminRouter from './routes/admin.js';
 import exportRouter from './routes/export.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = createServer(app);
 
@@ -37,6 +58,19 @@ app.get('/api/algorithms', (req, res) => {
   res.json(getAlgorithms());
 });
 
+// List available images in the images/ directory
+app.get('/api/images', (req, res) => {
+  const imagesDir = path.join(__dirname, '..', 'images');
+  try {
+    const files = fs.readdirSync(imagesDir);
+    const images = files
+      .filter((f) => /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(f));
+    res.json(images);
+  } catch {
+    res.json([]);
+  }
+});
+
 // Serve client in production
 if (process.env.NODE_ENV === 'production') {
   const clientDist = path.join(__dirname, '..', 'client', 'dist');
@@ -52,7 +86,7 @@ io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
   // ── Participant joins a session ──
-  socket.on('session:join', ({ sessionId, displayName }, callback) => {
+  socket.on('session:join', ({ sessionId }, callback) => {
     const session = queries.getSession.get(sessionId);
     if (!session) {
       return callback?.({ error: 'Session not found' });
@@ -61,8 +95,8 @@ io.on('connection', (socket) => {
       return callback?.({ error: 'Session is not accepting new participants' });
     }
 
-    const participantId = uuidv4();
-    queries.addParticipant.run(participantId, sessionId, displayName, socket.id);
+    const participantId = generateParticipantId();
+    queries.addParticipant.run(participantId, sessionId, socket.id);
 
     socket.join(`session:${sessionId}`);
     socket.data = { participantId, sessionId };
@@ -140,11 +174,35 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── Admin force-ends current round ──
+  socket.on('admin:forceEndRound', ({ sessionId }, callback) => {
+    try {
+      const activeRound = queries.getCurrentRound.get(sessionId);
+      if (!activeRound) {
+        return callback?.({ error: 'No active round' });
+      }
+      handleRoundTimeout(activeRound.id, sessionId, io);
+      callback?.({ success: true });
+    } catch (err) {
+      callback?.({ error: err.message });
+    }
+  });
+
   // ── Admin ends session ──
   socket.on('admin:endSession', ({ sessionId }, callback) => {
     try {
       endSession(sessionId, io);
       callback?.({ success: true });
+    } catch (err) {
+      callback?.({ error: err.message });
+    }
+  });
+
+  // ── Admin requests histogram data for a round ──
+  socket.on('admin:getHistogramData', ({ roundId }, callback) => {
+    try {
+      const values = getRoundHistogramData(roundId);
+      callback?.({ values });
     } catch (err) {
       callback?.({ error: err.message });
     }
@@ -193,11 +251,16 @@ io.on('connection', (socket) => {
   // ── Disconnect handling ──
   socket.on('disconnect', () => {
     console.log(`Socket disconnected: ${socket.id}`);
-    const { sessionId } = socket.data || {};
+    const { participantId, sessionId } = socket.data || {};
 
     queries.disconnectParticipant.run(socket.id);
 
     if (sessionId) {
+      // Handle mid-round departure
+      if (participantId) {
+        handleParticipantDeparture(participantId, sessionId, io);
+      }
+
       const participants = queries.getSessionParticipants.all(sessionId);
       io.to(`admin:${sessionId}`).emit('participants:update', participants);
       io.to(`session:${sessionId}`).emit('participants:count', participants.length);

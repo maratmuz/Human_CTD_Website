@@ -4,10 +4,21 @@ import { useSocket } from '../hooks/useSocket';
 
 const API_BASE = '';
 
+function buildHistogramBins(values, binWidth) {
+  const bins = [];
+  for (let start = 0; start < 1000; start += binWidth) {
+    const end = Math.min(start + binWidth, 1000);
+    const count = values.filter((v) => v >= start && (start + binWidth >= 1000 ? v <= end : v < end)).length;
+    bins.push({ label: `${start}`, count, start, end });
+  }
+  const maxCount = Math.max(...bins.map((b) => b.count), 1);
+  return bins.map((b) => ({ ...b, heightPercent: (b.count / maxCount) * 100 }));
+}
+
 export default function AdminPage() {
   const { sessionId: urlSessionId } = useParams();
   const navigate = useNavigate();
-  const { socket, connected } = useSocket();
+  const { socket } = useSocket();
 
   const [password, setPassword] = useState(localStorage.getItem('adminPassword') || '');
   const [authenticated, setAuthenticated] = useState(false);
@@ -22,9 +33,16 @@ export default function AdminPage() {
   // New session form
   const [newSessionName, setNewSessionName] = useState('');
   const [tolerance, setTolerance] = useState(50);
-  const [feedbackMode, setFeedbackMode] = useState('match-only');
-  const [pairingAlgorithm, setPairingAlgorithm] = useState('random-mixing');
+  const [pairingAlgorithm, setPairingAlgorithm] = useState('homogeneous-mixing');
   const [algorithms, setAlgorithms] = useState([]);
+  const [availableImages, setAvailableImages] = useState([]);
+  const [selectedImage, setSelectedImage] = useState('');
+  const [roundTimer, setRoundTimer] = useState(20);
+  const [feedbackTimer, setFeedbackTimer] = useState(5);
+
+  // Histogram
+  const [histogramBinWidth, setHistogramBinWidth] = useState(50);
+  const [histogramData, setHistogramData] = useState([]);
 
   const headers = { 'x-admin-password': password, 'Content-Type': 'application/json' };
 
@@ -46,11 +64,19 @@ export default function AdminPage() {
     }
   }, [password]);
 
-  // Fetch algorithms
+  // Fetch algorithms and available images
   useEffect(() => {
     fetch(`${API_BASE}/api/algorithms`)
       .then((r) => r.json())
       .then(setAlgorithms)
+      .catch(() => {});
+
+    fetch(`${API_BASE}/api/images`)
+      .then((r) => r.json())
+      .then((imgs) => {
+        setAvailableImages(imgs);
+        if (imgs.length > 0) setSelectedImage(imgs[0]);
+      })
       .catch(() => {});
   }, []);
 
@@ -107,6 +133,11 @@ export default function AdminPage() {
         prev.map((r) => (r.id === data.roundId ? { ...r, status: 'completed' } : r))
       );
       setRoundProgress(null);
+
+      // Fetch histogram data for the completed round
+      socket.emit('admin:getHistogramData', { roundId: data.roundId }, (response) => {
+        if (response?.values) setHistogramData(response.values);
+      });
     });
 
     return () => {
@@ -131,6 +162,10 @@ export default function AdminPage() {
   }
 
   async function createSession() {
+    if (!selectedImage) {
+      setError('Please select an image');
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/admin/sessions`, {
         method: 'POST',
@@ -139,9 +174,10 @@ export default function AdminPage() {
           name: newSessionName || 'Experiment',
           config: {
             tolerance,
-            feedbackMode,
             pairingAlgorithm,
-            images: ['image1', 'image2', 'image3'],
+            image: selectedImage,
+            roundTimer,
+            feedbackTimer,
           },
         }),
       });
@@ -157,6 +193,13 @@ export default function AdminPage() {
   function startRound() {
     if (!socket || !activeSession) return;
     socket.emit('admin:startRound', { sessionId: activeSession.id }, (response) => {
+      if (response?.error) setError(response.error);
+    });
+  }
+
+  function forceEndRound() {
+    if (!socket || !activeSession) return;
+    socket.emit('admin:forceEndRound', { sessionId: activeSession.id }, (response) => {
       if (response?.error) setError(response.error);
     });
   }
@@ -227,7 +270,7 @@ export default function AdminPage() {
   if (!activeSession) {
     return (
       <div className="center-page">
-        <div style={{ maxWidth: 600, width: '100%' }}>
+        <div style={{ maxWidth: 700, width: '100%' }}>
           <div className="page-header">
             <h1>Experiment Dashboard</h1>
           </div>
@@ -257,7 +300,22 @@ export default function AdminPage() {
               </select>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="form-group">
+              <label className="label">Image</label>
+              {availableImages.length === 0 ? (
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  No images found. Add image files to the <code>images/</code> directory.
+                </p>
+              ) : (
+                <select value={selectedImage} onChange={(e) => setSelectedImage(e.target.value)}>
+                  {availableImages.map((img) => (
+                    <option key={img} value={img}>{img}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
               <div className="form-group">
                 <label className="label">Tolerance (0-1000)</label>
                 <input
@@ -270,12 +328,29 @@ export default function AdminPage() {
               </div>
 
               <div className="form-group">
-                <label className="label">Feedback Mode</label>
-                <select value={feedbackMode} onChange={(e) => setFeedbackMode(e.target.value)}>
-                  <option value="match-only">Match/No Match only</option>
-                  <option value="show-partner">Show partner's value</option>
-                  <option value="show-all">Show all details</option>
-                </select>
+                <label className="label">Round Timer (s)</label>
+                <input
+                  type="number"
+                  value={roundTimer}
+                  onChange={(e) => setRoundTimer(Number(e.target.value))}
+                  min={0}
+                  max={300}
+                  placeholder="0 = manual"
+                />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>0 = manual</span>
+              </div>
+
+              <div className="form-group">
+                <label className="label">Feedback Timer (s)</label>
+                <input
+                  type="number"
+                  value={feedbackTimer}
+                  onChange={(e) => setFeedbackTimer(Number(e.target.value))}
+                  min={0}
+                  max={300}
+                  placeholder="0 = manual"
+                />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>0 = manual</span>
               </div>
             </div>
 
@@ -388,7 +463,9 @@ export default function AdminPage() {
         <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           <p><strong>Algorithm:</strong> {config.pairingAlgorithm}</p>
           <p><strong>Tolerance:</strong> {config.tolerance}</p>
-          <p><strong>Feedback:</strong> {config.feedbackMode}</p>
+          <p><strong>Image:</strong> {config.image}</p>
+          <p><strong>Round Timer:</strong> {config.roundTimer > 0 ? `${config.roundTimer}s` : 'Manual'}</p>
+          <p><strong>Feedback Timer:</strong> {config.feedbackTimer > 0 ? `${config.feedbackTimer}s` : 'Manual'}</p>
         </div>
 
         <hr style={{ margin: '16px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
@@ -402,10 +479,7 @@ export default function AdminPage() {
             <li key={p.id}>
               <span>
                 <span className={`connection-dot ${p.connected ? 'connected' : 'disconnected'}`} />
-                {p.display_name}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                {p.id.slice(0, 6)}
+                {p.id}
               </span>
             </li>
           ))}
@@ -426,7 +500,15 @@ export default function AdminPage() {
               onClick={startRound}
               disabled={participants.length < 2 || !!activeRound}
             >
-              {activeRound ? 'Round in Progress...' : `Start Round ${rounds.length + 1}`}
+              {activeRound
+                ? 'Round in Progress...'
+                : `Start Round ${rounds.length + 1}`}
+            </button>
+          )}
+
+          {activeRound && !isCompleted && (
+            <button className="btn btn-warning w-full" onClick={forceEndRound}>
+              Force End Round
             </button>
           )}
 
@@ -491,7 +573,7 @@ export default function AdminPage() {
                 ? `${Math.round(roundStats[roundStats.length - 1].stats.matchRate * 100)}%`
                 : '—'}
             </div>
-            <div className="stat-label">Last Match Rate</div>
+            <div className="stat-label">Within Tolerance</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">
@@ -532,7 +614,7 @@ export default function AdminPage() {
                 {roundProgress.pairDetails?.map((pair) => (
                   <tr key={pair.pairId} style={{ borderTop: '1px solid var(--border)' }}>
                     <td style={{ padding: '8px 0' }}>
-                      {pair.participantA?.slice(0, 6)} ↔ {pair.participantB?.slice(0, 6)}
+                      {pair.participantA} ↔ {pair.participantB}
                     </td>
                     <td>{pair.responsesSubmitted}/2</td>
                     <td>
@@ -559,6 +641,41 @@ export default function AdminPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Histogram */}
+        {histogramData.length > 0 && (
+          <div className="card mt-16">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3>Value Distribution (Last Round)</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>Bin Width:</label>
+                <input
+                  type="range"
+                  min={10}
+                  max={200}
+                  step={10}
+                  value={histogramBinWidth}
+                  onChange={(e) => setHistogramBinWidth(Number(e.target.value))}
+                  style={{ width: 100 }}
+                />
+                <span style={{ fontSize: 12, fontWeight: 600, minWidth: 30 }}>{histogramBinWidth}</span>
+              </div>
+            </div>
+            <div className="histogram">
+              {buildHistogramBins(histogramData, histogramBinWidth).map((bin) => (
+                <div key={bin.start} className="histogram-bar-container">
+                  <span className="histogram-count">{bin.count > 0 ? bin.count : ''}</span>
+                  <div
+                    className="histogram-bar"
+                    style={{ height: `${bin.heightPercent}%` }}
+                    title={`${bin.label}–${bin.end}: ${bin.count}`}
+                  />
+                  <span className="histogram-label">{bin.label}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

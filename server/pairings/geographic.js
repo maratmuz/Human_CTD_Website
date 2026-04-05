@@ -1,51 +1,32 @@
 /**
- * Geographic Lattice Pairing Algorithm
+ * Spatial Network — 1D Ring Lattice (degree 4)
  *
- * Participants are arranged in a ring. Each participant has K nearest neighbors.
- * Each round, they are paired with a different neighbor from their neighborhood.
- *
- * Config options:
- *   - neighborsK: number of neighbors on each side (default: 2, so 4 total neighbors)
+ * Participants are arranged in a ring. Each participant is connected
+ * to their 2 nearest neighbors on each side (4 total connections).
+ * Each round, a random maximal matching is sampled from these edges.
  */
-export function generatePairings(participants, roundNumber, config) {
+export function buildNetwork(participants, config) {
   const n = participants.length;
-  if (n < 2) return [];
-
-  const k = config?.neighborsK || 2; // neighbors on each side
-  const totalNeighbors = k * 2;
-
-  // Build ring: participant at index i has neighbors at i±1, i±2, ..., i±k
-  // Each round, pick a specific offset to pair with
-  // Round 1: offset +1, Round 2: offset -1, Round 3: offset +2, etc.
-  const offsets = [];
-  for (let o = 1; o <= k; o++) {
-    offsets.push(o);
-    offsets.push(-o);
-  }
-
-  const offsetIndex = (roundNumber - 1) % offsets.length;
-  const offset = offsets[offsetIndex];
-
-  const pairs = [];
-  const paired = new Set();
+  const k = config?.neighborsK || 2;
+  const edges = [];
+  const edgeSet = new Set();
 
   for (let i = 0; i < n; i++) {
-    if (paired.has(i)) continue;
-
-    const j = ((i + offset) % n + n) % n;
-    if (paired.has(j) || i === j) continue;
-
-    pairs.push({ a: participants[i].id, b: participants[j].id });
-    paired.add(i);
-    paired.add(j);
+    for (let offset = 1; offset <= k; offset++) {
+      const j = (i + offset) % n;
+      const key = Math.min(i, j) + ':' + Math.max(i, j);
+      if (!edgeSet.has(key)) {
+        edgeSet.add(key);
+        edges.push([Math.min(i, j), Math.max(i, j)]);
+      }
+    }
   }
 
-  return pairs;
+  return edges;
 }
 
 export const meta = {
-  name: 'geographic',
-  label: 'Geographic Lattice',
-  description: 'Ring topology — participants play with their nearest neighbors.',
-  maxRounds: (n) => 4, // 2*k offsets by default
+  name: 'spatial-network',
+  label: 'Spatial Network',
+  description: '1D ring lattice where each participant connects to 2 nearest neighbors on each side (degree 4).',
 };

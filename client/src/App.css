@@ -340,6 +340,81 @@ select:focus {
   margin-top: 8px;
 }
 
+/* ─── Countdown ──────────────────────────────────────────────────────────── */
+
+.countdown {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--primary);
+  padding: 4px 10px;
+  background: #e0e7ff;
+  border-radius: 8px;
+}
+
+.countdown-urgent {
+  color: var(--danger);
+  background: #fee2e2;
+  animation: pulse 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 1; }
+  to { opacity: 0.6; }
+}
+
+/* ─── Histogram ──────────────────────────────────────────────────────────── */
+
+.histogram {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 180px;
+  margin-top: 16px;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.histogram-bar-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.histogram-bar {
+  width: 100%;
+  background: var(--primary);
+  border-radius: 2px 2px 0 0;
+  min-height: 1px;
+  transition: height 0.3s ease;
+}
+
+.histogram-count {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.histogram-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+/* ─── Warning button ─────────────────────────────────────────────────────── */
+
+.btn-warning {
+  background: var(--warning);
+  color: white;
+}
+
+/* ─── Utilities ──────────────────────────────────────────────────────────── */
+
 .mt-16 { margin-top: 16px; }
 .mb-16 { margin-bottom: 16px; }
 .gap-8 { gap: 8px; }

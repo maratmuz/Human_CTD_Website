@@ -1,17 +1,16 @@
-# Coordination Experiment Website
+# Human Coordination Experiment
 
-A real-time web-based behavioral experiment inspired by Centola & Baronchelli's "The Spontaneous Emergence of Conventions" (2015). Participants join a session, get paired according to configurable network topologies, view images, and independently input values (0–1000). The system checks if pairs converge within a tolerance, tracks rounds, and compiles convergence data.
+A real-time web-based behavioral experiment platform inspired by Centola & Baronchelli's "The Spontaneous Emergence of Conventions" (2015). Participants join a session, get paired according to network topologies, view an image, and independently input values (0-1000). The system checks if pairs converge within a tolerance and tracks convergence across rounds.
 
-Supports 50–200+ participants, both in-person and remote, with a live admin dashboard.
+Participants are fully anonymous — no names, no IDs, no information about network structure. The admin controls everything: algorithm selection, image, tolerance, timers, and when to stop.
 
 ## Stack
 
 | Layer | Technology |
 |-------|-----------|
 | Backend | Node.js + Express + Socket.IO |
-| Frontend | React (Vite) |
+| Frontend | React 19 (Vite) |
 | Database | SQLite (via `better-sqlite3`) |
-| Monorepo | Single repo, `client/` + `server/` folders |
 
 ## Quick Start
 
@@ -22,157 +21,73 @@ npm run install:all
 # Run in development (server on :3000, client on :5173)
 npm run dev
 
-# Build for production
+# Build & run in production
 npm run build
-
-# Run in production (serves client from server)
-npm start
+NODE_ENV=production npm start
 ```
 
-## How to Use
+## How It Works
 
-1. **Admin** — Go to `/admin`, login with password `admin` (configurable via `ADMIN_PASSWORD` env var)
-2. **Create a session** — Choose pairing algorithm, tolerance, and feedback mode
-3. **Share the link** — Participants go to `/session/<CODE>` or enter the 6-character session code on the homepage
-4. **Start rounds** — Admin clicks "Start Round"; participants see the image and input values
-5. **Monitor** — Admin sees live progress: pairs completed, match rates, average differences
-6. **Export data** — CSV download from the admin panel, or use `python3 analyze.py`
+### Admin Workflow
+1. Go to `/admin`, login with password (default: `admin`)
+2. Create a session: choose algorithm, image, tolerance, and timers
+3. Share the participant link or session code with participants
+4. Start rounds — participants are automatically paired and see the image
+5. Monitor live progress: match rates, pair completion, value distribution histogram
+6. Continue running rounds until convergence is observed, then end the experiment
+7. Export all data as CSV
 
-## Environment Variables
+### Participant Experience
+1. Enter the session code on the homepage or use the direct link
+2. **Waiting room** — see how many participants are connected
+3. **Playing** — see the image, enter a value (0-1000), submit before the timer expires
+4. **Feedback** — see whether they matched or not, wait for the next round
+5. Repeat until the admin ends the experiment
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Server port |
-| `ADMIN_PASSWORD` | `admin` | Password for the admin dashboard |
-| `NODE_ENV` | `development` | Set to `production` to serve client from server |
-
-See `.env.example` for a template.
+### Timers
+- **Round Timer** (default 20s): How long participants have to submit a value. Auto-submits when time runs out. Set to 0 for unlimited (admin manually advances).
+- **Feedback Timer** (default 5s): How long the feedback screen shows before the next round auto-starts. Set to 0 for manual advancement only.
+- Admin always has manual "Start Round" and "Force End Round" buttons regardless of timer settings.
 
 ## Pairing Algorithms
 
 | Algorithm | Description |
 |-----------|-------------|
-| **Round Robin** | Everyone plays everyone over N-1 rounds (classic tournament scheduling) |
-| **Random Mixing** | Random partner each round (Centola's random mixing condition) |
-| **Geographic Lattice** | Ring topology — participants play with their nearest neighbors |
-| **Small World (Watts-Strogatz)** | Lattice with random shortcuts, configurable rewiring probability beta |
-| **Custom** | Edit `server/pairings/custom.js` to implement your own |
+| **Spatial Network** | 1D ring lattice with degree 4. Each participant connects to their 2 nearest neighbors on each side. Creates regional clusters that may develop competing conventions. |
+| **Random Network** | Random regular graph with degree 4. Each participant has exactly 4 random connections. Produces entrenched local groups similar to spatial networks. |
+| **Homogeneous Mixing** | Complete graph — any participant can be paired with any other each round. No stable local clusters; enables a single convention to snowball to universal adoption. |
 
-Each algorithm implements the same interface: `generatePairings(participants, roundNumber, config) → [{a, b}]`. To add a new algorithm, duplicate `custom.js` and register it in `server/pairingEngine.js`.
+## Environment Variables
+
+| Variable  | Default | Description |
+|-----------|---------|-------------|
+| `PORT`    | `3000`  | Server port |
+| `ADMIN_PASSWORD`    | `admin`     | Password for the admin dashboard |
+| `NODE_ENV`| `development` | Set to `production` to serve client from server |
 
 ## Images
 
-Place experiment images in the `images/` directory as `image1.jpg`, `image2.jpg`, `image3.jpg`, etc. The admin config specifies which image IDs to use; rounds cycle through them.
+Place experiment images in the `images/` directory (jpg, png, gif, webp, svg). The admin selects one image per session. If the image file is missing, participants see a placeholder.
 
-If an image file is missing, participants see a placeholder with the image ID displayed.
+## Data Export
 
-## Data Analysis
+- **CSV**: Download from the admin panel "Export CSV" button
+- **JSON**: `GET /api/export/sessions/:id/json`
+- **Direct SQL**: `sqlite3 data/experiment.db "SELECT * FROM results;"`
 
-The SQLite database is stored at `data/experiment.db`. You can copy this file for offline analysis in Python, R, or any SQLite-compatible tool.
-
-### Python Analyzer
-
-```bash
-# Overview of all sessions
-python3 analyze.py
-
-# Detailed view of a specific session (round-by-round, convergence analysis)
-python3 analyze.py SESSION_ID
-
-# Export session data to CSV files (saved to exports/ folder)
-python3 analyze.py --export SESSION_ID
-```
-
-### Direct SQL
-
-```bash
-sqlite3 data/experiment.db "SELECT * FROM sessions;"
-sqlite3 data/experiment.db "SELECT * FROM participants;"
-sqlite3 data/experiment.db "SELECT * FROM results JOIN pairs ON results.pair_id = pairs.id;"
-```
-
-### REST API Export
-
-- `GET /api/export/sessions/:id/json` — Full session data as JSON
-- `GET /api/export/sessions/:id/csv` — Results as CSV
-- `GET /api/export/sessions/:id/participants/csv` — Participant list as CSV
+All data (sessions, participants, rounds, pairs, responses, results) is saved to SQLite at `data/experiment.db`.
 
 ## Data Persistence
 
-All data persists in the SQLite database file (`data/experiment.db`):
-
-- **Participant closes tab** — Marked as disconnected, data stays. They can reconnect by refreshing.
-- **Admin closes tab** — Session and data remain. Reopen `/admin` to continue.
-- **Server restarts** — Database survives. Participants need to refresh to reconnect WebSocket.
-- **Deletion** — Only the admin "Delete" button or deleting the `.db` file removes data.
+- **Participant disconnects** — Marked as disconnected; any active pair is resolved as "no match". They can reconnect by refreshing.
+- **Admin closes tab** — Session data remains. Reopen `/admin` to continue.
+- **Server restarts** — Database survives. Participants refresh to reconnect.
 
 ## Deployment
 
-**Railway** (recommended):
-- Push to GitHub, connect the repo, auto-deploys
-- Native WebSocket support
-- Free tier with $5/month credit
-
-**Any Node.js server:**
 ```bash
 npm run build
 NODE_ENV=production ADMIN_PASSWORD=your_password npm start
 ```
 
-## Project Structure
-
-```
-Human_CTD_Website/
-├── package.json                 # Root monorepo scripts (dev, build, start)
-├── .env.example                 # Environment variable template
-├── .gitignore                   # Ignores node_modules, data/, dist/, .env
-├── analyze.py                   # Python script for data analysis & CSV export
-├── images/                      # Experiment images (image1.jpg, image2.jpg, ...)
-│
-├── server/
-│   ├── package.json             # Server dependencies (express, socket.io, better-sqlite3)
-│   ├── index.js                 # Entry point: Express + Socket.IO server, all event handlers
-│   ├── db.js                    # SQLite schema & prepared queries for all 6 tables
-│   ├── gameLogic.js             # Core engine: start rounds, process responses, compute results
-│   ├── pairingEngine.js         # Algorithm dispatcher: routes to the selected pairing module
-│   ├── pairings/
-│   │   ├── roundRobin.js        # Round-robin: everyone plays everyone (circle method)
-│   │   ├── randomMixing.js      # Random mixing: Fisher-Yates shuffle, pair adjacent
-│   │   ├── geographic.js        # Geographic lattice: ring topology, nearest neighbors
-│   │   ├── smallWorld.js        # Watts-Strogatz: lattice + random shortcuts (seeded PRNG)
-│   │   └── custom.js            # Template for creating your own algorithm
-│   └── routes/
-│       ├── admin.js             # REST API: create/list/delete sessions, update config (auth required)
-│       └── export.js            # REST API: download session data as CSV or JSON
-│
-├── client/
-│   ├── package.json             # Client dependencies (react, react-router-dom, socket.io-client)
-│   ├── index.html               # HTML entry point
-│   ├── vite.config.js           # Vite config with proxy to server (/api, /socket.io, /images)
-│   └── src/
-│       ├── main.jsx             # React entry point, renders <App />
-│       ├── App.jsx              # Router: / (join), /session/:id (participant), /admin (dashboard)
-│       ├── App.css              # All styles: theming, components, layouts, game UI, admin dashboard
-│       ├── index.css             # Minimal (styles are in App.css)
-│       ├── context/
-│       │   └── GameContext.jsx   # Game state: useReducer tracking stage, round, pair, feedback
-│       ├── hooks/
-│       │   └── useSocket.js     # Socket.IO connection hook with auto-reconnection
-│       └── pages/
-│           ├── JoinPage.jsx     # Landing page: enter session code
-│           ├── ParticipantPage.jsx  # Full participant flow: join → lobby → play → feedback → end
-│           └── AdminPage.jsx    # Admin dashboard: login, create/delete sessions, monitor rounds
-│
-└── data/                        # Auto-created, contains experiment.db (gitignored)
-```
-
-## Database Schema
-
-| Table | Purpose |
-|-------|---------|
-| `sessions` | Experiment sessions with config (algorithm, tolerance, feedback mode) and status |
-| `participants` | Players with display name, connection status, and session membership |
-| `rounds` | Round number, image ID, and completion status per session |
-| `pairs` | Who is paired with whom in each round, and which algorithm was used |
-| `responses` | Individual participant values (0–1000) submitted per pair |
-| `results` | Computed outcomes: whether the pair matched, the difference, and both values |
+Works on any Node.js hosting (Railway, Render, VPS, etc.) with WebSocket support.

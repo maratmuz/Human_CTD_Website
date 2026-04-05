@@ -5,14 +5,13 @@ const GameContext = createContext();
 const initialState = {
   sessionId: null,
   participantId: null,
-  displayName: null,
   participantCount: 0,
-  stage: 'join', // join | lobby | playing | feedback | waiting | results | ended
+  stage: 'join', // join | lobby | playing | feedback | ended
   currentRound: null,
   pairId: null,
-  partnerId: null,
-  partnerName: null,
   imageId: null,
+  roundTimer: 0,
+  feedbackTimer: 0,
   feedback: null,
   hasSubmitted: false,
 };
@@ -24,7 +23,6 @@ function gameReducer(state, action) {
         ...state,
         sessionId: action.sessionId,
         participantId: action.participantId,
-        displayName: action.displayName,
         participantCount: action.participantCount,
         stage: 'lobby',
       };
@@ -36,9 +34,8 @@ function gameReducer(state, action) {
         stage: 'playing',
         currentRound: action.roundNumber,
         pairId: action.pairId,
-        partnerId: action.partnerId,
-        partnerName: action.partnerName,
         imageId: action.imageId,
+        roundTimer: action.roundTimer || 0,
         feedback: null,
         hasSubmitted: false,
       };
@@ -46,19 +43,18 @@ function gameReducer(state, action) {
       return { ...state, hasSubmitted: true };
     case 'FEEDBACK':
       return { ...state, stage: 'feedback', feedback: action.feedback };
-    case 'ROUND_ENDED':
-      return { ...state, stage: 'waiting' };
+    case 'FEEDBACK_TIMER':
+      return { ...state, feedbackTimer: action.feedbackTimer || 0 };
+    case 'PARTNER_DISCONNECTED':
+      return { ...state, stage: 'feedback', feedback: { matched: false, partnerDisconnected: true } };
     case 'UNPAIRED':
-      return { ...state, stage: 'waiting', currentRound: action.roundNumber };
+      return { ...state, stage: 'feedback', feedback: { unpaired: true }, currentRound: action.roundNumber };
     case 'SESSION_ENDED':
       return { ...state, stage: 'ended' };
     case 'SESSION_LOCKED':
       return { ...state, stage: 'lobby' };
     case 'RECONNECTED':
-      return {
-        ...state,
-        ...action.data,
-      };
+      return { ...state, ...action.data };
     case 'RESET':
       return initialState;
     default:
