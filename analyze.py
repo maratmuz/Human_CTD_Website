@@ -102,8 +102,6 @@ def get_all_results(cur, session_id):
         SELECT
             rd.round_number,
             rd.image_id,
-            pa.display_name AS player_a_name,
-            pb.display_name AS player_b_name,
             p.participant_a,
             p.participant_b,
             p.pairing_algorithm,
@@ -114,10 +112,8 @@ def get_all_results(cur, session_id):
         FROM results r
         JOIN pairs p ON r.pair_id = p.id
         JOIN rounds rd ON p.round_id = rd.id
-        JOIN participants pa ON p.participant_a = pa.id
-        JOIN participants pb ON p.participant_b = pb.id
         WHERE rd.session_id = ?
-        ORDER BY rd.round_number, pa.display_name
+        ORDER BY rd.round_number, p.participant_a
     """, (session_id,))
     return [dict(row) for row in cur.fetchall()]
 
@@ -161,11 +157,11 @@ def show_session_detail(cur, session_id):
     participants = get_participants(cur, session_id)
     sub_header(f"PARTICIPANTS ({len(participants)})")
     if participants:
-        print(f"  {'Name':<25} {'ID':<10} {'Connected':<12} {'Joined'}")
+        print(f"  {'ID':<12} {'Connected':<12} {'Joined'}")
         separator("─")
         for p in participants:
             connected = "Yes" if p["connected"] else "No"
-            print(f"  {p['display_name']:<25} {p['id'][:8]:<10} {connected:<12} {p['joined_at']}")
+            print(f"  {p['id']:<12} {connected:<12} {p['joined_at']}")
     else:
         print("  No participants joined.")
 
@@ -205,18 +201,16 @@ def show_session_detail(cur, session_id):
         # Show pair details
         if completed:
             print()
-            print(f"    {'Player A':<15} {'Val A':>6}  {'Player B':<15} {'Val B':>6}  {'Diff':>5}  {'Match'}")
-            print("    " + "─" * 62)
-            # Build name lookup
-            name_map = {p["id"]: p["display_name"] for p in participants}
+            print(f"    {'Player A':<10} {'Val A':>6}  {'Player B':<10} {'Val B':>6}  {'Diff':>5}  {'Match'}")
+            print("    " + "─" * 52)
             for p in pairs:
                 if p["result"]:
-                    name_a = name_map.get(p["participant_a"], p["participant_a"][:8])
-                    name_b = name_map.get(p["participant_b"], p["participant_b"][:8])
+                    name_a = p["participant_a"][:8]
+                    name_b = p["participant_b"][:8]
                     r = p["result"]
                     match_str = "YES" if r["matched"] else "no"
-                    print(f"    {name_a:<15} {r['value_a']:>6}  "
-                          f"{name_b:<15} {r['value_b']:>6}  "
+                    print(f"    {name_a:<10} {r['value_a']:>6}  "
+                          f"{name_b:<10} {r['value_b']:>6}  "
                           f"{r['difference']:>5}  {match_str}")
 
     # ── Convergence Analysis ──
@@ -335,10 +329,10 @@ def export_session(cur, session_id):
     parts_path = os.path.join(export_dir, f"{session_id}_participants.csv")
     if participants:
         with open(parts_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["id", "display_name", "connected", "joined_at"])
+            writer = csv.DictWriter(f, fieldnames=["id", "connected", "joined_at"])
             writer.writeheader()
             for p in participants:
-                writer.writerow({k: p[k] for k in ["id", "display_name", "connected", "joined_at"]})
+                writer.writerow({k: p[k] for k in ["id", "connected", "joined_at"]})
         print(f"  Participants: {parts_path} ({len(participants)} rows)")
 
     # Export all responses (raw)
