@@ -1,7 +1,25 @@
 import { Router } from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { getSessionData } from '../gameLogic.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DB_PATH = path.join(__dirname, '..', '..', 'data', 'experiment.db');
+
 const router = Router();
+
+// Download the raw SQLite database file (password-protected)
+router.get('/database', (req, res) => {
+  const password = req.headers['x-admin-password'] || req.query.password;
+  if (password !== (process.env.ADMIN_PASSWORD || 'admin')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  res.download(DB_PATH, 'experiment.db', (err) => {
+    if (err && !res.headersSent) {
+      res.status(500).json({ error: 'Failed to send database file' });
+    }
+  });
+});
 
 // Export session data as JSON
 router.get('/sessions/:id/json', (req, res) => {
